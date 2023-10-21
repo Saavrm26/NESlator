@@ -116,4 +116,448 @@ void CPU6502::clock() {
 	cycles--;
 }
 
+uint8_t CPU6502::GetFlag(FLAGS6502 f) { return (status & f) ? 1 : 0; }
+void    CPU6502::SetFlag(FLAGS6502 f, bool v) {
+    if (v) {
+        status |= f;
+    } else {
+        status &= ~f;
+    }
+}
 
+// Address mode: Implied
+uint8_t CPU6502::IMP() {
+	fetched = a;
+	return 0;
+}
+
+// Address Mode : Immediate
+uint8_t CPU6502::IMM() {
+	addr_abs = pc++;
+	return 0;
+}
+
+// Address Mode: Zero Page
+uint8_t CPU6502::ZP0() {
+	addr_abs = read(pc);
+	pc++;
+	addr_abs &= 0x00FF;
+	return 0;
+}
+
+// Address Mode: Zero Page with X Offset
+uint8_t CPU6502::ZPX() {
+	addr_abs = (read(pc) + x);
+	pc++;
+	addr_abs &= 0x00FF;
+	return 0;
+}
+
+// Address Mode: Zero Page with Y Offset
+uint8_t CPU6502::ZPY() {
+	addr_abs = (read(pc) + y);
+	pc++;
+	addr_abs &= 0x00FF;
+	return 0;
+}
+
+// Address Mode: Absolute
+uint8_t CPU6502::ABS() {
+	uint16_t lo = read(pc);
+	pc++;
+	uint16_t hi = read(pc);
+	pc++;
+	addr_abs = (hi << 8) | lo;
+	return 0;
+}
+
+// Address Mode : Absolute with x offset
+uint8_t CPU6502::ABX() {
+	uint16_t lo = read(pc);
+	pc++;
+	uint16_t hi = read(pc);
+	pc++;
+	addr_abs = (hi << 8) | lo;
+	addr_abs += x;
+	if ((addr_abs & 0xFF00) != (hi << 8)) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+// Address Mode : Absolute with y offset
+uint8_t CPU6502::ABY() {
+	uint16_t lo = read(pc);
+	pc++;
+	uint16_t hi = read(pc);
+	pc++;
+	addr_abs = (hi << 8) | lo;
+	addr_abs += x;
+	if ((addr_abs & 0xFF00) != (hi << 8)) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+// Address Mode : Indirect
+uint8_t CPU6502::IND() {
+	uint16_t ptr_lo = read(pc);
+	pc++;
+	uint16_t ptr_hi = read(pc);
+	pc++;
+	uint16_t ptr = (ptr_hi << 8) | ptr_lo;
+	if (ptr_lo == 0xFF) {
+		addr_abs = (read(ptr & 0xFF00) << 8) | read(ptr);
+	} else {
+		addr_abs = (read(ptr + 1) << 8) | read(ptr);
+	}
+	return 0;
+}
+
+// Address Mode: Indirect with X offset
+uint8_t CPU6502::IZX() {
+	uint16_t t = read(pc);
+	pc++;
+	uint16_t lo = read(uint16_t(t + uint16_t(x)) & 0x00FF);
+	uint16_t hi = read(uint16_t(t + uint16_t(x) + 1) & 0x00FF);
+
+	addr_abs = (hi << 8) | lo;
+	return 0;
+}
+
+// Address Mode: Indirect with Y offset
+uint8_t CPU6502::IZY() {
+	uint16_t t = read(pc);
+	pc++;
+	uint16_t lo = read(t & 0x00FF);
+	uint16_t hi = read((t + 1) & 0x00FF);
+
+	addr_abs = (hi << 8) | lo;
+	addr_abs += y;
+
+	if ((addr_abs & 0xFF00) != (hi << 8)) {
+		return 1;
+	} else {
+		return 0;
+	}
+}
+
+uint8_t CPU6502::REL() {
+	addr_rel = read(pc);
+	pc++;
+	if (addr_rel & 0x80) {
+		addr_rel |= 0xFF00;
+	}
+	return 0;
+}
+
+uint8_t CPU6502::fetch() {
+	if (lookup[opcode].addrmode != &CPU6502::IMP) {
+		fetched = read(addr_abs);
+	}
+	return fetched;
+}
+
+// Instructions
+
+// Addition with carry
+// Function:    A = A + M + C
+// Flags Out:   C, V, N, Z
+uint8_t CPU6502::ADC() {
+	fetch();
+
+	temp = (uint16_t)a + (uint16_t)fetched + (uint16_t)GetFlag(C);
+
+	SetFlag(C, temp > 255);
+	SetFlag(N, temp & 0x80);
+	SetFlag(V, (~((uint16_t)a ^ (uint16_t)fetched) & ((uint16_t)a ^ (uint16_t)temp)) & 0x0080);
+	SetFlag(Z, (temp & 0x00FF));
+
+	a = temp & 0x00FF;
+	return 1;
+}
+
+// Subtract with carry
+// Function:    A = A - M - (1 - C) or A = A + ~M + C
+// Flags Out:   C, V, N, Z
+uint8_t CPU6502::SBC() {
+	fetch();
+
+	uint16_t value = ((uint16_t)fetched) ^ 0x00FF; // ones complement
+
+	temp = (uint16_t)a + value + (uint16_t)GetFlag(C);
+	SetFlag(C, temp & 0xFF00);
+	SetFlag(Z, ((temp & 0x00FF) == 0));
+	SetFlag(V, (temp ^ (uint16_t)a) & (temp ^ value) & 0x0080);
+	SetFlag(N, temp & 0x0080);
+	a = temp & 0x00FF;
+	return 1;
+}
+
+// Instruction: Bitwise Logic AND
+// Function:    A = A & M
+// Flags Out:   N, Z
+uint8_t CPU6502::AND() {
+	fetch();
+	a = a & fetched;
+	SetFlag(Z, a == 0x00);
+	SetFlag(N, a & 0x80);
+	return 1;
+}
+
+// Instruction: Arithmetic Shift Left
+// Function:    A = C <- (A << 1) <- 0
+// Flags Out:   N, Z, C
+uint8_t CPU6502::ASL() {
+	fetch();
+	temp = (uint16_t)fetched << 1;
+	SetFlag(C, (temp & 0xFF00) > 0);
+	SetFlag(N, temp & 0x80);
+	SetFlag(Z, (temp & 0x00FF) == 0x0000);
+	if (lookup[opcode].addrmode == &CPU6502::IMP) {
+		a = temp & 0x00FF;
+	} else {
+		write(addr_abs, temp);
+	}
+	return 0;
+}
+
+// Instruction: Branch if Carry Clear
+// Function:    if(C == 0) pc = address
+uint8_t CPU6502::BCC() {
+	if (GetFlag(C) == 0) {
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00)) {
+			cycles++;
+		}
+
+		pc = addr_abs;
+	}
+	return 0;
+}
+
+// Instruction: Branch if Carry Set
+// Function:    if(C == 1) pc = address
+uint8_t CPU6502::BCS() {
+	if (GetFlag(C) == 1) {
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+	return 0;
+}
+
+// Instruction: Branch if Equal
+// Function:    if(Z == 1) pc = address
+uint8_t CPU6502::BEQ() {
+	if (GetFlag(Z) == 1) {
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+	return 0;
+}
+
+uint8_t CPU6502::BIT() {
+	fetch();
+	temp = a & fetched;
+	SetFlag(Z, (temp & 0x00FF) == 0x00);
+	SetFlag(N, fetched & (1 << 7));
+	SetFlag(V, fetched & (1 << 6));
+	return 0;
+}
+
+// Instruction: Branch if Negative
+// Function:    if(N == 1) pc = address
+uint8_t CPU6502::BMI() {
+	if (GetFlag(N) == 1) {
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+	return 0;
+}
+
+// Instruction: Branch if Not Equal
+// Function:    if(Z == 0) pc = address
+uint8_t CPU6502::BNE() {
+	if (GetFlag(Z) == 0) {
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+	return 0;
+}
+
+// Instruction: Branch if Positive
+// Function:    if(N == 0) pc = address
+uint8_t CPU6502::BPL() {
+	if (GetFlag(N) == 0) {
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+	return 0;
+}
+
+// Instruction: Break
+// Function:    Program Sourced Interrupt
+uint8_t CPU6502::BRK() {
+	pc++;
+
+	SetFlag(I, 1);
+	write(0x0100 + stkp, (pc >> 8) & 0x00FF);
+	stkp--;
+	write(0x0100 + stkp, pc & 0x00FF);
+	stkp--;
+
+	SetFlag(B, 1);
+	write(0x0100 + stkp, status);
+	stkp--;
+	SetFlag(B, 0);
+
+	pc = (uint16_t)read(0xFFFE) | ((uint16_t)read(0xFFFF) << 8);
+	return 0;
+}
+
+// Instruction: Branch if Overflow Clear
+// Function:    if(V == 0) pc = address
+uint8_t CPU6502::BVC() {
+	if (GetFlag(V) == 0) {
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+	return 0;
+}
+
+// Instruction: Branch if Overflow Set
+// Function:    if(V == 1) pc = address
+uint8_t CPU6502::BVS() {
+	if (GetFlag(V) == 1) {
+		cycles++;
+		addr_abs = pc + addr_rel;
+
+		if ((addr_abs & 0xFF00) != (pc & 0xFF00))
+			cycles++;
+
+		pc = addr_abs;
+	}
+	return 0;
+}
+
+// Instruction: Clear Carry Flag
+// Function:    C = 0
+uint8_t CPU6502::CLC() {
+	SetFlag(C, false);
+	return 0;
+}
+
+// Instruction: Clear Decimal Flag
+// Function:    D = 0
+uint8_t CPU6502::CLD() {
+	SetFlag(D, false);
+	return 0;
+}
+
+// Instruction: Disable Interrupts / Clear Interrupt Flag
+// Function:    I = 0
+uint8_t CPU6502::CLI() {
+	SetFlag(I, false);
+	return 0;
+}
+
+// Instruction: Clear Overflow Flag
+// Function:    V = 0
+uint8_t CPU6502::CLV() {
+	SetFlag(V, false);
+	return 0;
+}
+
+// Instruction: Transfer Accumulator to X Register
+// Function:    X = A
+// Flags Out:   N, Z
+uint8_t CPU6502::TAX() {
+	x = a;
+	SetFlag(Z, x == 0x00);
+	SetFlag(N, x & 0x80);
+	return 0;
+}
+
+// Instruction: Transfer Accumulator to Y Register
+// Function:    Y = A
+// Flags Out:   N, Z
+uint8_t CPU6502::TAY() {
+	y = a;
+	SetFlag(Z, y == 0x00);
+	SetFlag(N, y & 0x80);
+	return 0;
+}
+
+// Instruction: Transfer Stack Pointer to X Register
+// Function:    X = stack pointer
+// Flags Out:   N, Z
+uint8_t CPU6502::TSX() {
+	x = stkp;
+	SetFlag(Z, x == 0x00);
+	SetFlag(N, x & 0x80);
+	return 0;
+}
+
+// Instruction: Transfer X Register to Accumulator
+// Function:    A = X
+// Flags Out:   N, Z
+uint8_t CPU6502::TXA() {
+	a = x;
+	SetFlag(Z, a == 0x00);
+	SetFlag(N, a & 0x80);
+	return 0;
+}
+
+// Instruction: Transfer X Register to Stack Pointer
+// Function:    stack pointer = X
+uint8_t CPU6502::TXS() {
+	stkp = x;
+	return 0;
+}
+
+// Instruction: Transfer Y Register to Accumulator
+// Function:    A = Y
+// Flags Out:   N, Z
+uint8_t CPU6502::TYA() {
+	a = y;
+	SetFlag(Z, a == 0x00);
+	SetFlag(N, a & 0x80);
+	return 0;
+}
+
+// This function captures illegal opcodes
+uint8_t CPU6502::XXX() { return 0; }

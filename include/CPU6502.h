@@ -6,7 +6,6 @@
 class Bus;
 
 class CPU6502 {
-
   private:
 	Bus    *bus = nullptr;
 	uint8_t read(uint16_t addr);
